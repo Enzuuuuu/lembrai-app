@@ -3,7 +3,6 @@ import { normalize, extractTitle } from "../normalize";
 import { addDays } from "../../../utils/date.utils";
 
 const PATTERNS: [RegExp, (hoje: Date) => Date, RegExp][] = [
-  [/\bhoje\b/, (hoje) => hoje, /\bhoje\b/gi],
   [/\bamanha\b/, (hoje) => addDays(hoje, 1), /\bamanha\b/gi],
   [/\bdepois de amanha\b/, (hoje) => addDays(hoje, 2), /\bdepois de amanha\b/gi],
 ];
