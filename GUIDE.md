@@ -47,10 +47,34 @@ lembrai/
     │   ├── theme.config.ts      # Cores, fontes, raios, sombras, transições
     │   └── index.ts             # Barrel — re-exporta tudo do config/
     │
+    ├── utils/
+    │   └── date.utils.ts        # Utilitários de data (today, addDays, diffDays, formatação)
+    │
     ├── services/                # Lógica de negócio pura (sem React)
     │   ├── db.service.ts        # CRUD no IndexedDB
-    │   ├── parser.service.ts    # Interpreta frases em linguagem natural
-    │   └── recurrence.service.ts# Calcula status, próximas datas, conclusão
+    │   ├── parser.service.ts    # Barrel que re-exporta o sub-módulo parser/
+    │   ├── recurrence.service.ts# Calcula status, próximas datas, conclusão
+    │   └── parser/              # ★ SUB-MÓDULO DE PARSER (padrão Strategy) ★
+    │       ├── index.ts         # parsePhrase() / parseAll() — API pública
+    │       ├── types.ts         # Interfaces Strategy e StrategyResult
+    │       ├── normalize.ts     # Normalização de texto (remove acentos, lowercase)
+    │       ├── classify.ts      # Classifica frase → Strategy (por prioridade)
+    │       └── strategies/      # 14 estratégias concretas:
+    │           ├── daily.strategy.ts         # "todo dia", "diariamente"
+    │           ├── weekly.strategy.ts        # "toda semana", "semanalmente"
+    │           ├── monthly.strategy.ts       # "todo mês", "mensal"
+    │           ├── yearly.strategy.ts        # "todo ano"
+    │           ├── weekday.strategy.ts       # "dia útil"
+    │           ├── weekend.strategy.ts       # "fim de semana"
+    │           ├── weekday-days.strategy.ts  # "dias úteis" (plural)
+    │           ├── tomorrow.strategy.ts      # "hoje", "amanhã", "depois de amanhã"
+    │           ├── specific-day.strategy.ts  # "todo dia 15"
+    │           ├── month-name.strategy.ts    # "em janeiro"
+    │           ├── next-weekday.strategy.ts  # "próxima segunda"
+    │           ├── first-last-day.strategy.ts# "primeiro/último dia do mês"
+    │           ├── interval.strategy.ts      # "a cada N dias/semanas/meses"
+    │           ├── alternating.strategy.ts   # "dia sim dia não"
+    │           └── in-x.strategy.ts          # "daqui a N dias"
     │
     ├── hooks/                   # Estado React com lógica encapsulada
     │   ├── useEventos.ts        # Estado global de eventos (load/save/delete/done)
@@ -73,7 +97,7 @@ lembrai/
 **O que faz:** Define toda a identidade textual e comportamental da aplicação.
 
 Contém:
-- `APP` — nome, tagline, locale
+- `APP` — nome, tagline, locale, dateLocale, description
 - `PWA` — cor do tema, cor de fundo, modo de exibição
 - `LABELS` — todos os textos da UI (seções, botões, placeholders, feedbacks)
 - `RECURRENCE_PRESETS` — opções do select de recorrência
@@ -104,6 +128,24 @@ Contém:
 
 ---
 
+### `src/utils/date.utils.ts`
+**O que faz:** Utilitários puros de manipulação de datas. Zero dependências de React.
+
+Funções exportadas:
+| Função | O que faz |
+|---|---|
+| `today()` | Retorna Date de hoje (meia-noite local) |
+| `addDays(date, days)` | Adiciona N dias |
+| `diffDays(a, b)` | Diferença em dias inteiros |
+| `toISODate(date)` | Date → `"YYYY-MM-DD"` |
+| `parseISODate(iso)` | `"YYYY-MM-DD"` → Date |
+| `formatDisplay(iso)` | Data amigável (ex: `"seg, 10 de jun."`) |
+| `generateId()` | ID único baseado em timestamp + random |
+
+**Regra:** Toda manipulação de data passa por aqui. Nenhum outro módulo faz contas com Date diretamente.
+
+---
+
 ### `src/services/db.service.ts`
 **O que faz:** Toda comunicação com o IndexedDB.
 
@@ -118,20 +160,68 @@ Funções exportadas:
 
 ---
 
-### `src/services/parser.service.ts`
-**O que faz:** Interpreta frases em linguagem natural e extrai dados estruturados.
+### `src/services/parser/` (sub-módulo)
 
-Função exportada:
-- `parsePhrase(frase: string): ParseResult | null`
+Implementa o **padrão Strategy** para interpretar frases em linguagem natural.
 
-Exemplos de entrada → saída:
-| Entrada | titulo | dataBase | recorrencia |
-|---|---|---|---|
-| `"Troquei a roupa de cama hoje"` | `Roupa de cama` | hoje | `7` |
-| `"Trocar óleo daqui a 2 dias"` | `Trocar óleo` | hoje+2 | — |
-| `"Limpar filtro a cada 30 dias"` | `Limpar filtro` | hoje | `30` |
+**Arquitetura:**
 
-**Para expandir:** Adicione novos padrões nos arrays `RECURRENCE_MAP` e na função `parseDateOffset`.
+```
+frase bruta
+    │
+    ▼
+normalize(frase)      ← remove acentos, lowercase, extrai título
+    │
+    ▼
+classify(frase)       ← percorre estratégias por prioridade (maior primeiro)
+    │                     retorna a primeira que der matches()
+    ▼
+strategy.parse()      ← executa a estratégia vencedora → StrategyResult[]
+    │
+    ▼
+parsePhrase() / parseAll()   ← monta ParseResult (título, dataBase, recorrência)
+```
+
+**API pública** (exportada via `src/services/parser.service.ts`):
+
+| Função | O que faz |
+|---|---|
+| `parsePhrase(frase)` | Retorna `ParseResult \| null` para o primeiro resultado |
+| `parseAll(frase)` | Retorna `ParseResult[]` para frases com múltiplos eventos |
+| `getAllStrategies()` | Retorna lista de todas as estratégias registradas |
+
+**Interface `Strategy`** (`parser/types.ts`):
+
+```ts
+interface Strategy {
+  name: string;
+  priority: number;
+  matches(frase: string): boolean;
+  parse(frase: string, hoje: Date): StrategyResult[];
+}
+```
+
+**Estratégias disponíveis** (14 no total):
+
+| Estratégia | Prioridade | Exemplo de frase |
+|---|---|---|
+| `alternating` | 100 | `"dia sim dia não"` |
+| `daily` | 90 | `"todo dia"`, `"diariamente"` |
+| `weekly` | 80 | `"toda semana"`, `"semanalmente"` |
+| `monthly` | 70 | `"todo mês"`, `"mensal"` |
+| `yearly` | 60 | `"todo ano"` |
+| `weekday` | 55 | `"dia útil"` |
+| `weekend` | 50 | `"fim de semana"` |
+| `weekday-days` | 45 | `"dias úteis"` |
+| `specific-day` | 40 | `"todo dia 15"` |
+| `next-weekday` | 35 | `"próxima segunda"` |
+| `first-last-day` | 30 | `"primeiro/último dia do mês"` |
+| `tomorrow` | 25 | `"hoje"`, `"amanhã"`, `"depois de amanhã"` |
+| `interval` | 20 | `"a cada N dias/semanas/meses"` |
+| `in-x` | 10 | `"daqui a N dias"` |
+| `month-name` | 5 | `"em janeiro"` |
+
+**Regra:** Adicionar uma nova estratégia = criar arquivo em `strategies/` e registrá-lo em `classify.ts`.
 
 ---
 
@@ -240,7 +330,8 @@ Edite **apenas** `src/config/app.config.ts`:
 export const APP = {
   name: "MeuApp",           // ← nome que aparece no header e no manifest
   tagline: "Meu slogan",
-  locale: "en-US",          // ← muda formatação de datas
+  locale: "en-US",          // ← locale geral
+  dateLocale: "en-US",      // ← formatação de datas
 };
 
 export const LABELS = {
@@ -282,28 +373,62 @@ export const RECURRENCE_PRESETS = [
 ];
 ```
 
-### Adicionar nova frase ao parser
+### Adicionar nova estratégia ao parser
 
-No `parser.service.ts`:
+1. Crie um arquivo em `src/services/parser/strategies/`, por exemplo `fortnightly.strategy.ts`:
 
 ```ts
-// No array RECURRENCE_MAP:
-[/quinzenal/i, 15],
+import type { Strategy, StrategyResult } from "../types";
 
-// Na função parseDateOffset:
-if (/semana\s+que\s+vem/i.test(frase)) return 7;
+export const fortnightlyStrategy: Strategy = {
+  name: "fortnightly",
+  priority: 85,
+  matches(frase: string) {
+    return /quinzenal/i.test(frase);
+  },
+  parse(frase: string, hoje: Date): StrategyResult[] {
+    return [{
+      titulo: extrairTitulo(frase, /quinzenal/i),
+      dataBase: hoje,
+      recorrenciaDias: 15,
+    }];
+  },
+};
+```
+
+2. Registre no `src/services/parser/classify.ts`:
+
+```ts
+import { fortnightlyStrategy } from "./strategies/fortnightly.strategy";
+
+const STRATEGIES: Strategy[] = [
+  alternatingStrategy,
+  fortnightlyStrategy,  // ← adicione aqui
+  dailyStrategy,
+  // ...
+];
 ```
 
 ---
 
 ## Fluxo de Dados
 
+### Criação de lembrete (texto ou voz)
+
 ```
 Usuário
   │
   ├─ digita frase ──► EventoForm
   │                       │
-  │               parsePhrase() [parser.service]
+  │               normalize(frase) [parser/normalize]
+  │                       │
+  │               classify(frase) [parser/classify]
+  │                       │
+  │               strategy.matches()? → strategy.parse()
+  │                       │
+  │               StrategyResult[] (titulo, dataBase, recorrenciaDias)
+  │                       │
+  │               parsePhrase() [parser/index]
   │                       │
   │               ParseResult { titulo, dataBase, recorrencia }
   │                       │
@@ -320,25 +445,54 @@ Usuário
                     EventoSection > EventoCard
 ```
 
+### Conclusão de evento
+
+```
+Usuário clica ✓
+  │
+  ▼
+useEventos.concluir(id)
+  │
+  ▼
+marcarConcluido(evento) [recurrence.service]
+  │
+  ├─ Recorrente: avança dataReferencia em recorrenciaDias
+  └─ Único: define ativo = false
+  │
+  ▼
+dbSave(evento atualizado) [db.service] ──► IndexedDB
+  │
+  ▼
+setEventos() ──► re-render
+```
+
 ---
 
 ## Camadas da Aplicação
 
 ```
-┌─────────────────────────────────┐
-│           UI (React)            │  App, EventoCard, EventoForm, EventoSection
-├─────────────────────────────────┤
-│         Estado (Hooks)          │  useEventos, useVoice
-├─────────────────────────────────┤
-│       Lógica de Negócio         │  parser.service, recurrence.service
-├─────────────────────────────────┤
-│         Persistência            │  db.service (IndexedDB)
-├─────────────────────────────────┤
-│       Configuração Central      │  app.config, theme.config
-└─────────────────────────────────┘
+┌──────────────────────────────────────┐
+│         UI (Componentes React)        │  App, EventoCard, EventoForm, EventoSection
+│   Importa de: hooks, config           │
+├──────────────────────────────────────┤
+│        Estado (Hooks React)           │  useEventos, useVoice
+│   Importa de: services, config        │
+├──────────────────────────────────────┤
+│      Lógica de Negócio (Services)     │  parser/, recurrence.service
+│   Importa de: utils, config, types    │  (zero dependência de React)
+├──────────────────────────────────────┤
+│         Utilitários (Utils)           │  date.utils
+│   Importa de: config                  │  (zero dependência de React)
+├──────────────────────────────────────┤
+│          Persistência                 │  db.service (IndexedDB)
+│   Importa de: types                   │  (zero dependência de React)
+├──────────────────────────────────────┤
+│      Configuração Central             │  app.config, theme.config
+│   Não importa de outras camadas       │
+└──────────────────────────────────────┘
 ```
 
-**Regra das camadas:** camadas superiores podem importar das inferiores. O inverso não é permitido. `db.service` não importa nada de React. `parser.service` não conhece o IndexedDB.
+**Regra das camadas:** camadas superiores podem importar das inferiores. O inverso não é permitido. Nenhum service importa React. `db.service` não conhece negócio. `parser/` não conhece IndexedDB.
 
 ---
 
